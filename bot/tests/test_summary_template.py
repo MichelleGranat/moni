@@ -239,3 +239,21 @@ def test_escaped_newlines_from_the_model_become_real_line_breaks():
         "830402: פרויקטים בתכנו ן\\nתיאור התוכנית: במסגרת תוכנית זו.\\nמטרת השינוי: תקצוב.")
     assert "\\n" not in intro and programs[0].heading == "פרויקטים בתכנון"
     assert programs[0].description == "במסגרת תוכנית זו." and programs[0].purpose == "תקצוב."
+
+
+def test_chrome_is_looked_for_in_the_right_places_on_each_platform():
+    """Windows installs Chrome at a fixed path; the Mac-only list used to fail there."""
+    from reports import chrome_candidates
+    win = chrome_candidates("win32", {"ProgramFiles": r"C:\Program Files",
+                                      "LOCALAPPDATA": r"C:\Users\x\AppData\Local"})
+    assert win[0] == r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    assert any(c.endswith("msedge.exe") for c in win)      # Edge is the built-in fallback
+    assert all(c.endswith(".exe") for c in win)
+
+    mac = chrome_candidates("darwin", {})
+    assert mac[0] == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    assert "chromium" in mac                               # a PATH name still works on a Mac
+
+    assert chrome_candidates("linux", {}) == ["google-chrome", "google-chrome-stable",
+                                              "chromium", "chromium-browser"]
+    assert win != mac

@@ -13,6 +13,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 
@@ -23,11 +25,29 @@ from summary_text import join_split_letters, split_programs
 
 TEMPLATES = Path(__file__).resolve().parent / "templates"
 
-# Where Chrome may live; MONI_CHROME in the environment overrides everything.
-CHROME_CANDIDATES = (
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
-)
+# Where to look for the Chromium-family browser that prints the summary to PDF; MONI_CHROME
+# overrides all of it. Windows and macOS install the browser at a fixed path, while Linux
+# puts it on PATH under one of several names.
+_WINDOWS_ROOTS = ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")
+_WINDOWS_BROWSERS = (r"Google\Chrome\Application\chrome.exe",
+                     # Edge is Chromium and ships with Windows, so it is the safest fallback.
+                     r"Microsoft\Edge\Application\msedge.exe")
+_MAC_BROWSERS = ("Google Chrome.app/Contents/MacOS/Google Chrome",
+                 "Chromium.app/Contents/MacOS/Chromium",
+                 "Brave Browser.app/Contents/MacOS/Brave Browser")
+_PATH_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
+
+
+def chrome_candidates(platform: str | None = None, env: Mapping[str, str] | None = None) -> list[str]:
+    """Browser paths and command names to try, in order, for this operating system."""
+    platform = sys.platform if platform is None else platform
+    env = os.environ if env is None else env
+    if platform == "win32":
+        roots = [value for key in _WINDOWS_ROOTS if (value := env.get(key))]
+        return [rf"{root}\{browser}" for browser in _WINDOWS_BROWSERS for root in roots]
+    if platform == "darwin":
+        return [f"/Applications/{app}" for app in _MAC_BROWSERS] + list(_PATH_BROWSERS)
+    return list(_PATH_BROWSERS)
 
 
 class ChromeNotFound(RuntimeError):
@@ -38,15 +58,18 @@ def find_chrome() -> str:
     env = os.environ.get("MONI_CHROME")
     if env and (os.path.isfile(env) or shutil.which(env)):
         return env
-    for candidate in CHROME_CANDIDATES:
+    candidates = chrome_candidates()
+    for candidate in candidates:
         if os.path.isfile(candidate):
             return candidate
         found = shutil.which(candidate)
         if found:
             return found
     raise ChromeNotFound(
-        "Google Chrome / Chromium not found. Install it, or set MONI_CHROME to the browser "
-        "binary (e.g. MONI_CHROME=/usr/bin/chromium).")
+        f"No Chrome/Chromium found on {sys.platform}. Looked at: {', '.join(candidates)}. "
+        "Install Google Chrome, or set MONI_CHROME in .env to the browser binary "
+        r"(Windows: C:\Program Files\Google\Chrome\Application\chrome.exe)."
+    )
 
 
 def html_to_pdf(html_path, pdf_path, *, chrome: str | None = None, timeout: int = 120) -> str:
