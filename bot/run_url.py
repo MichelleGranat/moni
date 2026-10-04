@@ -21,24 +21,49 @@ from main import CONFIG_PATH, MASTER_PATH, OUTPUT_DIR, email_reports, render_sum
 from utils_function import _slug
 
 
-def run(source: str):
-    """Extract one letter and render its summary PDF; return (rendered, result)."""
+def page_source(saved: str | None, given: str) -> str:
+    """The address shown on the page: the saved letter URL wins over a local path."""
+    saved = str(saved or "")
+    return saved if saved.startswith("http") and not str(given).startswith("http") else str(given)
+
+
+def run(source: str, *, rerender: bool = False):
+    """Extract one letter and render its summary PDF; return (rendered, result).
+
+    With rerender=True the model is not called: the fields saved by an earlier run
+    (files/outputs/<id>_extraction.json) are reused and only the page is regenerated.
+    """
     config = ConfigManager(CONFIG_PATH)
     config.load_master(MASTER_PATH)
     master_programs = config.get_ids()
+    master_names = ConfigManager.read_master_names(MASTER_PATH)
     extractor = agent.Agent(
         master_programs,
         api_key=config.get_api_key(),
         model=config.get_model_name(),
         provider=config.get_model_provider(),
+        fallback_model=config.get_model_fallback(),
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    result = extractor.extract(source)
+    saved = OUTPUT_DIR / f"{_slug(source)}_extraction.json"
+    if rerender and saved.is_file():
+        import json
+        from request_fields import RequestFields
+        data = json.loads(saved.read_text(encoding="utf-8"))
+        letter = agent.BudgetLetter(source)
+        # Re-rendering from the cached PDF must keep the letter's real address for the
+        # page footer, not the local file it was re-rendered from.
+        letter.source = page_source(data.get("source"), source)
+        table, matched = extractor._table(letter)
+        result = agent.Extraction(RequestFields(**data["fields"]), table, matched, bool(matched),
+                                  letter, data.get("llm_usage"), data.get("coalition_reason", ""))
+    else:
+        result = extractor.extract(source)
     relevant_programs = {
         code: master_programs.get(code, "") for code in sorted(result.matched_codes)
     }
-    rendered = render_summary(result, _slug(source), OUTPUT_DIR, relevant_programs)
+    rendered = render_summary(result, _slug(source), OUTPUT_DIR, relevant_programs, master_names)
     return rendered, result
 
 
@@ -47,8 +72,10 @@ if __name__ == "__main__":
     parser.add_argument("source", help="letter URL or local PDF path")
     parser.add_argument("--to", action="append", metavar="EMAIL",
                         help="also email the summary PDF to this address (repeatable)")
+    parser.add_argument("--rerender", action="store_true",
+                        help="reuse the saved extraction (no model call), only regenerate the page")
     args = parser.parse_args()
-    rendered, result = run(args.source)
+    rendered, result = run(args.source, rerender=args.rerender)
     print(f"relevant={result.relevant}  master-matches={len(result.matched_codes)}  "
           f"coalition={result.fields.coalition_funds!r}")
     print("summary PDF:", rendered[0] if rendered else "(none rendered)")

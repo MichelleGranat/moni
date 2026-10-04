@@ -24,10 +24,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "bot"))
 
+from common.config_manager import ConfigManager  # noqa: E402
 from reports import Reports  # noqa: E402
 from request_fields import RequestFields  # noqa: E402
 
 GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "golden")
+MASTER = os.path.join(_ROOT, "files", "master.xlsx")
 TEST_FILES = os.path.join(os.path.dirname(__file__), "test_files")
 OUTPUT_DIR = os.path.join(_ROOT, "files", "outputs")
 FALLBACK_LETTERHEAD = ["מדינת ישראל", "האוצר - אגף התקציבים", "תקציב רגיל"]
@@ -67,6 +69,16 @@ def _extras(request: str) -> dict:
     return extras
 
 
+def _fields(golden) -> RequestFields:
+    """The fixture's fields; an empty program list is derived from the summary like the
+    pipeline derives it (older fixtures predate that extractor)."""
+    from agent import Agent
+    text = dict(golden["text"])
+    if not text.get("program_number"):
+        text["program_number"] = Agent._program_number(text.get("request_summary", ""))
+    return RequestFields(**text)
+
+
 def render(request: str) -> str:
     golden = json.load(open(os.path.join(GOLDEN, f"{request}.json"), encoding="utf-8"))
     extras = _extras(request)
@@ -79,13 +91,15 @@ def render(request: str) -> str:
         out,
         # write_summary looks up Hebrew field labels; golden["text"] has the English
         # attribute names, so rebuild the RequestFields (model_dump by_alias -> Hebrew).
-        fields=RequestFields(**golden["text"]),
+        fields=_fields(golden),
         table=pd.DataFrame(golden["table"]),
         letterhead=extras["letterhead"],
         name_column="name",
         budget_history=budget_history,
         source_url=golden.get("source"),
         llm_usage=None,
+        request_id=request,
+        master_names=(ConfigManager.read_master_names(MASTER) if os.path.isfile(MASTER) else None),
     )
 
 

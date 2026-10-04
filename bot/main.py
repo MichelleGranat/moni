@@ -10,15 +10,21 @@ The pipeline reads top-to-bottom in main():
     uv run python bot/main.py                      # email the config.json mailing list
     uv run python bot/main.py --to me@example.com  # test run: email only this address
     uv run python bot/main.py --no-email           # render PDFs, send nothing
+    uv run python bot/main.py --all                # re-read letters already handled
+
+Letters already handled are remembered in files/outputs/processed.json and skipped on
+the next run, so a daily run touches only what is new; --all ignores that memory.
 
 Non-secret config (model, mailing list, schedule) comes from files/config.json; secrets
 (OpenAI key, Gmail OAuth) from .env; the master program-code set from files/master.xlsx.
 """
 import argparse
+import json
 import logging
 import os
 import shutil
 import sys
+from datetime import date
 from pathlib import Path
 
 # Make the project root importable so `common` can be found.
@@ -46,16 +52,46 @@ FALLBACK_URL = (
     "https://fs.knesset.gov.il/globaldocs/FINANCE/0e793046-014d-f111-a13e-005056aa7c52/"
     "4_0e793046-014d-f111-a13e-005056aa7c52_13_21560.pdf"
 )
+PROCESSED_PATH = OUTPUT_DIR / "processed.json"
+
+
+def load_processed(path: Path = PROCESSED_PATH) -> dict:
+    """{slug: {"date": ..., "relevant": bool}} of letters already handled; {} if none."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_processed(processed: dict, slug: str, relevant: bool,
+                       path: Path = PROCESSED_PATH) -> None:
+    """Record one handled letter and write the memory back right away."""
+    processed[slug] = {"date": date.today().isoformat(), "relevant": relevant}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(processed, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def render_summary(result, slug: str, output_dir: Path,
-                   relevant_programs: dict | None = None) -> tuple[str, str] | None:
+                   relevant_programs: dict | None = None,
+                   master_names: dict | None = None) -> tuple[str, str] | None:
     """Copy the original PDF and render the summary PDF for one extracted letter."""
     letter = result.letter
     try:
         shutil.copyfile(letter.doc.local_path(), output_dir / f"{slug}_original.pdf")
     except Exception:  # noqa: BLE001 - non-fatal, keep the run going
         logger.exception("%s: could not save original PDF", slug)
+    # What the extraction produced, as JSON next to the PDF: lets us re-render or compare
+    # the text without another model call.
+    try:
+        import json
+        (output_dir / f"{slug}_extraction.json").write_text(json.dumps({
+            "request_id": slug, "source": str(letter.source),
+            "fields": result.fields.model_dump(), "coalition_reason": result.coalition_reason,
+            "matched_codes": sorted(result.matched_codes), "relevant": result.relevant,
+            "llm_usage": result.llm_usage,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001 - never fail the run over the side file
+        logger.exception("%s: could not write extraction json", slug)
     try:
         pdf_path = Reports().write_summary(
             output_dir / f"{slug}_summary.pdf",
@@ -67,6 +103,9 @@ def render_summary(result, slug: str, output_dir: Path,
             source_url=letter.source,
             llm_usage=result.llm_usage,
             relevant_programs=relevant_programs,
+            request_id=slug,
+            coalition_reason=result.coalition_reason,
+            master_names=master_names,
         )
     except Exception:  # noqa: BLE001 - log and skip, keep the run going
         logger.exception("%s: summary PDF failed", slug)
@@ -75,8 +114,23 @@ def render_summary(result, slug: str, output_dir: Path,
     return (pdf_path, f"{slug}_summary")
 
 
-EMAIL_SUBJECT = "סיכום מכתבי העברה תקציבית"
-EMAIL_BODY = "מצורפים סיכומי מכתבי ההעברה התקציבית הרלוונטיים לתוכניות הקרן."
+EMAIL_SUBJECT = "סיכום פנייה תקציבית"
+
+
+def email_subject(path_names, today: date | None = None) -> str:
+    """'סיכום פנייה תקציבית DD.MM.YYYY': the date of the run, no request numbers."""
+    return f"{EMAIL_SUBJECT} {(today or date.today()).strftime('%d.%m.%Y')}"
+
+
+def email_body(path_names) -> str:
+    """The request numbers go in the body, one per line, so the subject stays short."""
+    ids = [name.removesuffix("_summary") for _, name in path_names]
+    head = ("מצורף סיכום אוטומטי של פניות תקציביות הרלוונטיות לתוכניות הקרן, "
+            "כל פנייה כקובץ PDF מצורף.")
+    if not ids:
+        return head
+    plural = "פניות" if len(ids) > 1 else "פנייה"
+    return head + f"\n\n{plural} בסיכום זה ({len(ids)}):\n" + "\n".join(f"• {i}" for i in ids)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -88,6 +142,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument(
         "--no-email", action="store_true",
         help="render the summary PDFs but do not send any email")
+    parser.add_argument(
+        "--all", action="store_true",
+        help="handle every letter in the feed, even ones remembered as already handled")
     return parser.parse_args(argv)
 
 
@@ -108,7 +165,7 @@ def email_reports(sender: str | None, recipients: list[str], path_names) -> bool
     for path, name in path_names:
         with open(path, "rb") as f:
             attachments.append(Attachment(f.read(), f"{name}.pdf"))
-    send_email(sender, recipients, EMAIL_SUBJECT, EMAIL_BODY, attachments)
+    send_email(sender, recipients, email_subject(path_names), email_body(path_names), attachments)
     logger.info("emailed %d PDF(s) to %s", len(attachments), ", ".join(recipients))
     return True
 
@@ -122,11 +179,13 @@ def main(argv=None) -> None:
     # Sync config's `programs` list from the master file, then use that dict.
     config.load_master(MASTER_PATH)
     master_programs = config.get_ids()  # {code: name}, now sourced from the master
+    master_names = ConfigManager.read_master_names(MASTER_PATH)  # full names for the page
     extractor = agent.Agent(
         master_programs,
         api_key=config.get_api_key(),
         model=config.get_model_name(),
         provider=config.get_model_provider(),
+        fallback_model=config.get_model_fallback(),
     )
 
     # 1. aggregate — candidate letter URLs (fall back to one URL when offline).
@@ -134,14 +193,19 @@ def main(argv=None) -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    processed = {} if args.all else load_processed()
     path_names = []
     for url in urls:
         slug = _slug(url)
+        if slug in processed:
+            logger.info("%s: already handled on %s, skipped", slug, processed[slug].get("date"))
+            continue
         try:
             result = extractor.extract(url)
         except Exception:  # noqa: BLE001 - skip unreadable PDFs, keep the run going
-            logger.warning("%s: skipped, could not extract", slug)
+            logger.warning("%s: skipped, could not extract (will retry next run)", slug)
             continue
+        remember_processed(processed, slug, result.relevant)
 
         # 2. the master check — only summarize letters that touch a master code.
         if not result.relevant:
@@ -156,7 +220,7 @@ def main(argv=None) -> None:
         }
 
         # 3. render — one summary PDF per relevant letter.
-        rendered = render_summary(result, slug, OUTPUT_DIR, relevant_programs)
+        rendered = render_summary(result, slug, OUTPUT_DIR, relevant_programs, master_names)
         if rendered:
             path_names.append(rendered)
 

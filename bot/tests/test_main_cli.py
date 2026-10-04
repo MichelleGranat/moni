@@ -76,3 +76,50 @@ def test_no_email_run_does_not_touch_gmail(monkeypatch):
     with pytest.raises(RuntimeError, match="stop here"):
         main.main(["--no-email"])
     assert checked == []
+
+
+def test_processed_memory_round_trip(tmp_path):
+    path = tmp_path / "processed.json"
+    assert main.load_processed(path) == {}
+    processed = {}
+    main.remember_processed(processed, "21705", True, path)
+    main.remember_processed(processed, "21687", False, path)
+    again = main.load_processed(path)
+    assert set(again) == {"21705", "21687"}
+    assert again["21705"]["relevant"] is True and again["21687"]["relevant"] is False
+    assert again["21705"]["date"]
+
+
+def test_load_processed_ignores_a_broken_file(tmp_path):
+    path = tmp_path / "processed.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert main.load_processed(path) == {}
+
+
+def test_parse_args_all_flag():
+    assert main.parse_args(["--all"]).all is True
+    assert main.parse_args([]).all is False
+
+
+def test_email_subject_is_title_plus_run_date():
+    from datetime import date
+    paths = [("a.pdf", "21703_summary"), ("b.pdf", "21772_summary")]
+    assert main.email_subject(paths, date(2026, 9, 5)) == "סיכום פנייה תקציבית 05.09.2026"
+    assert main.email_subject([], date(2026, 9, 5)) == "סיכום פנייה תקציבית 05.09.2026"
+
+
+def test_email_body_lists_every_request_number():
+    body = main.email_body([("a.pdf", "21703_summary"), ("b.pdf", "21772_summary")])
+    assert "פניות בסיכום זה (2):" in body
+    assert "• 21703" in body and "• 21772" in body
+    assert "21703_summary" not in body
+    assert main.email_body([("a.pdf", "21703_summary")]).count("פנייה בסיכום זה (1):") == 1
+
+
+def test_rerender_keeps_the_saved_letter_url_over_a_local_path():
+    from run_url import page_source
+    url = "https://fs.knesset.gov.il/globaldocs/x/4_x_13_21766.pdf"
+    assert page_source(url, "files/outputs/21766_original.pdf") == url
+    assert page_source(url, "https://other/21766.pdf") == "https://other/21766.pdf"
+    assert page_source(None, "files/outputs/21766_original.pdf") == "files/outputs/21766_original.pdf"
+    assert page_source("files/x.pdf", "files/outputs/21766_original.pdf") == "files/outputs/21766_original.pdf"
