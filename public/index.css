@@ -685,3 +685,18 @@ body {
 .mailbox-readonly .mailbox-input { display: inline-block; min-height: 1.5em; }
 .mailbox-hint { font-size: 0.85rem; color: #666; line-height: 1.5; margin: 0.75rem 0; }
 .mailbox-hint code { direction: ltr; unicode-bidi: embed; background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; }
+
+/* Login */
+.login-content {
+  margin-top: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.login-title {
+  color: #4d6477;
+  font-size: 14px;
+  text-align: center;
+}

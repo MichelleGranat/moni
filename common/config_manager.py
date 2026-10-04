@@ -27,6 +27,8 @@ class ConfigManager:
       GOOGLE_CLIENT_ID      -> get_google_client_id()
       GOOGLE_CLIENT_SECRET  -> get_google_client_secret()
       GOOGLE_REFRESH_TOKEN  -> get_google_refresh_token()
+      MONI_WEB_CLIENT_ID    -> get_web_client_id()
+      MONI_ALLOWED_EMAILS   -> get_allowed_emails()
     """
 
     PROGRAMS_SHEET = "תוכניות"
@@ -135,6 +137,18 @@ class ConfigManager:
     def get_google_refresh_token() -> str | None:
         """Refresh token written by bot/gmail_auth.py (GOOGLE_REFRESH_TOKEN)."""
         return os.environ.get("GOOGLE_REFRESH_TOKEN") or None
+
+    @staticmethod
+    def get_web_client_id() -> str | None:
+        """"Web application" OAuth client id for the web app's sign-in (MONI_WEB_CLIENT_ID)."""
+        return os.environ.get("MONI_WEB_CLIENT_ID") or None
+
+    @staticmethod
+    def get_allowed_emails() -> set[str]:
+        """Google accounts allowed into the web app (MONI_ALLOWED_EMAILS, comma-separated).
+        Lowercased; empty means nobody gets in."""
+        raw = os.environ.get("MONI_ALLOWED_EMAILS") or ""
+        return {email.strip().lower() for email in raw.split(",") if email.strip()}
 
     def get_last_master(self) -> dict:
         return {
