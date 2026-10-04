@@ -1,4 +1,10 @@
+const TOKEN_KEY = 'moni_id_token';
+
 document.addEventListener('DOMContentLoaded', () => {
+  if (!getToken()) {
+    goToLogin();
+    return;
+  }
   bindNavigation();
   bindPageActions();
   initializeSchedulePage();
@@ -41,6 +47,7 @@ function bindPageActions() {
     if (action === 'add-email') addEmailRow();
     if (action === 'delete-email') deleteEmailRow(actionButton);
     if (action === 'save-mailing-list') saveMailingList();
+    if (action === 'sign-out') signOut();
   });
 
 }
@@ -115,8 +122,37 @@ async function initializeMailboxPage() {
   }
 }
 
+function getToken() {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function clearToken() {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {}
+}
+
+function goToLogin() {
+  window.location.replace('login.html');
+}
+
+function signOut() {
+  clearToken();
+  goToLogin();
+}
+
 async function apiRequest(path, options = {}) {
-  const response = await fetch("http://127.0.0.1:5000"+path, options);
+  const headers = { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` };
+  const response = await fetch(path, { ...options, headers });
+  if (response.status === 401 || response.status === 403) {
+    clearToken();
+    goToLogin();
+    throw new Error('נדרשת התחברות.');
+  }
   const text = await response.text();
   let data = text;
 

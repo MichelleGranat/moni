@@ -11,11 +11,16 @@ sys.path.insert(0, _ROOT)
 from flask import Flask  # noqa: E402
 
 from common.config_manager import ConfigManager  # noqa: E402
-from web.routes import register_routes  # noqa: E402
+from web.routes import auth, register_routes  # noqa: E402
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    # Signed in as an allowed user; the sign-in wall itself is covered in test_web_auth.py.
+    monkeypatch.setenv("MONI_WEB_CLIENT_ID", "web-client")
+    monkeypatch.setenv("MONI_ALLOWED_EMAILS", "boss@example.com")
+    monkeypatch.setattr(auth, "_verify_google_token",
+                        lambda token, client_id: {"email": "boss@example.com", "email_verified": True})
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({
         "model_name": "", "model_provider": None, "mailing_list": [],
@@ -26,7 +31,9 @@ def client(tmp_path):
     app.config["config_manager"] = ConfigManager(str(cfg))
     app.config["files_dir"] = tmp_path
     register_routes(app)
-    return app.test_client()
+    test_client = app.test_client()
+    test_client.environ_base["HTTP_AUTHORIZATION"] = "Bearer token"
+    return test_client
 
 
 def test_get_reports_env_sender(client, monkeypatch):
